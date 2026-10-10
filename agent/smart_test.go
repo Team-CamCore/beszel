@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/henrygd/beszel/internal/entities/smart"
@@ -837,6 +838,27 @@ func TestParseSmartOutputMarksVerified(t *testing.T) {
 	assert.True(t, device.typeVerified)
 }
 
+func TestParseSmartForNvmeRejectsIdentityOnlyResponse(t *testing.T) {
+	jsonPayload := []byte(`{
+		"smartctl": {"exit_status": 2},
+		"device": {"name": "/dev/nvme0", "type": "nvme"},
+		"model_name": "Netac NVMe SSD 500GB",
+		"serial_number": "IDENTITY-ONLY",
+		"user_capacity": {"bytes": 500107862016}
+	}`)
+
+	sm := &SmartManager{SmartDataMap: make(map[string]*smart.SmartData)}
+	hasData, exitStatus := sm.parseSmartForNvme(jsonPayload, "")
+
+	assert.False(t, hasData)
+	assert.Equal(t, 2, exitStatus)
+	assert.NotContains(t, sm.SmartDataMap, "IDENTITY-ONLY")
+
+	device := &DeviceInfo{Name: "/dev/nvme0", Type: "nvme"}
+	assert.False(t, sm.parseSmartOutput(device, jsonPayload))
+	assert.NotContains(t, sm.SmartDataMap, "IDENTITY-ONLY")
+}
+
 func TestParseSmartOutputKeepsCustomType(t *testing.T) {
 	fixturePath := filepath.Join("test-data", "smart", "sda.json")
 	data, err := os.ReadFile(fixturePath)
@@ -1461,4 +1483,45 @@ func TestLookupDarwinNvmeCapacityProviderError(t *testing.T) {
 	assert.Equal(t, uint64(0), sm.lookupDarwinNvmeCapacity("any-serial"))
 	// Cache should be initialized even on error so we don't retry (Once already fired)
 	assert.NotNil(t, sm.darwinNvmeCapacity)
+}
+
+// A child test process acts as smartctl: the controller is inaccessible,
+// while its namespace returns valid NVMe data.
+func init() {
+	fixture := os.Getenv("BESZEL_SMART_TEST_FIXTURE")
+	if fixture == "" {
+		return
+	}
+	if isNvmeControllerPath(os.Args[len(os.Args)-1]) {
+		fmt.Print(`{"smartctl":{"exit_status":2,"messages":[{"string":"Permission denied","severity":"error"}]}}`)
+		os.Exit(2)
+	}
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Print(strings.ReplaceAll(string(data), "/dev/nvme0", os.Args[len(os.Args)-1]))
+	os.Exit(0)
+}
+
+func TestCollectSmartNvmeNamespaceFallback(t *testing.T) {
+	fixture, err := filepath.Abs(filepath.Join("test-data", "smart", "nvme0.json"))
+	require.NoError(t, err)
+	t.Setenv("BESZEL_SMART_TEST_FIXTURE", fixture)
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	for _, cached := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cached=%t", cached), func(t *testing.T) {
+			device := &DeviceInfo{Name: "/dev/nvme0", Type: "nvme"}
+			sm := &SmartManager{smartctlPath: executable, SmartDataMap: make(map[string]*smart.SmartData)}
+			if cached {
+				sm.SmartDataMap["2024031600129"] = &smart.SmartData{DiskName: device.Name, DiskType: device.Type}
+			}
+			require.NoError(t, sm.CollectSmart(device))
+			assert.Equal(t, "/dev/nvme0n1", device.Name)
+			assert.Equal(t, "/dev/nvme0n1", sm.SmartDataMap["2024031600129"].DiskName)
+			assert.True(t, sm.isExcludedDevice("/dev/nvme0"))
+		})
+	}
 }

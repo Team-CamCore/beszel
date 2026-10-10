@@ -14,6 +14,7 @@ import {
 	$maxValues,
 	$systems,
 	$userSettings,
+	getUserChartTime,
 } from "@/lib/stores"
 import { chartTimeData, listen, parseSemVer } from "@/lib/utils"
 import type {
@@ -90,7 +91,7 @@ export function useSystemData(id: string) {
 	useEffect(() => {
 		return () => {
 			if (!persistChartTime.current) {
-				$chartTime.set($userSettings.get().chartTime)
+				$chartTime.set(getUserChartTime())
 			}
 			persistChartTime.current = false
 			setSystemStats([])
@@ -150,6 +151,7 @@ export function useSystemData(id: string) {
 			return
 		}
 		let isFirst = true
+		const { expectedInterval } = chartTimeData["1m"]
 		pb.realtime
 			.subscribe(
 				`rt_metrics`,
@@ -167,9 +169,9 @@ export function useSystemData(id: string) {
 						setContainerData(containerPoint ? [containerPoint] : [])
 						return
 					}
-					setSystemStats((prev) => appendData(prev, [statsPoint], 1000, 60))
+					setSystemStats((prev) => appendData(prev, [statsPoint], expectedInterval, 60))
 					if (containerPoint) {
-						setContainerData((prev) => appendData(prev, [containerPoint], 1000, 60))
+						setContainerData((prev) => appendData(prev, [containerPoint], expectedInterval, 60))
 					}
 				},
 				{ query: { system: system.id } }

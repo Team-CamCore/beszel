@@ -6,6 +6,7 @@ package agent
 
 import (
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -26,12 +27,14 @@ type Agent struct {
 	debug                     bool                                                  // true if LOG_LEVEL is set to debug
 	zfs                       bool                                                  // true if system has arcstats
 	memCalc                   string                                                // Memory calculation formula
+	forceUseCgroup            bool                                                  // Explicitly use the cgroup mount root for CPU accounting
 	fsNames                   []string                                              // List of filesystem device names being monitored
 	fsStats                   map[string]*system.FsStats                            // Keeps track of disk stats for each filesystem
 	diskPrev                  map[uint16]map[string]prevDisk                        // Previous disk I/O counters per cache interval
+	diskBaseline              map[string]prevDisk                                   // Latest disk I/O counters of any interval, seeds a new interval
 	diskUsageCacheDuration    time.Duration                                         // How long to cache disk usage (to avoid waking sleeping disks)
 	lastDiskUsageUpdate       time.Time                                             // Last time disk usage was collected
-	netInterfaces             map[string]struct{}                                   // Stores all valid network interfaces
+	netInterfaces             map[string]bool                                       // Valid network interfaces; true if byte counters come from MAC stats (Jetson nvethernet)
 	netIoStats                map[uint16]system.NetIoStats                          // Keeps track of bandwidth usage per cache interval
 	netInterfaceDeltaTrackers map[uint16]*deltatracker.DeltaTracker[string, uint64] // Per-cache-time NIC delta trackers
 	dockerManager             *dockerManager                                        // Manages Docker API requests
@@ -44,12 +47,15 @@ type Agent struct {
 	connectionManager         *ConnectionManager                                    // Channel to signal connection events
 	handlerRegistry           *HandlerRegistry                                      // Registry for routing incoming messages
 	server                    *ssh.Server                                           // SSH server
+	serverListener            net.Listener                                          // SSH listener, also closed if Serve has not started yet
+	serverMu                  sync.Mutex                                            // Guards server and serverListener
 	dataDir                   string                                                // Directory for persisting data
 	keys                      []gossh.PublicKey                                     // SSH public keys
 	smartManager              *SmartManager                                         // Manages SMART data
 	systemdManager            *systemdManager                                       // Manages systemd services
 	monitorManager            *MonitorManager                                       // Manages network monitors
 	storagePoolManager        *StoragePoolManager                                   // Manages storage pool and dataset data
+	packageUpdates            *packageUpdatesManager                                // Checks for pending package updates
 }
 
 // NewAgent creates a new agent with the given data directory for persisting data.
@@ -74,6 +80,11 @@ func NewAgent(dataDir ...string) (agent *Agent, err error) {
 	}
 
 	agent.memCalc, _ = utils.GetEnv("MEM_CALC")
+
+	if useCgroup, exists := utils.GetEnv("USE_CGROUP"); exists {
+		agent.forceUseCgroup = useCgroup == "true"
+	}
+	agent.initializeCpu()
 	agent.sensorConfig = agent.newSensorConfig()
 
 	// Parse disk usage cache duration (e.g., "15m", "1h") to avoid waking sleeping disks
@@ -100,6 +111,8 @@ func NewAgent(dataDir ...string) (agent *Agent, err error) {
 	}
 
 	slog.Debug(beszel.Version)
+
+	agent.warnIfRootCgroup()
 
 	// initialize docker manager
 	agent.dockerManager = newDockerManager(agent)
@@ -149,11 +162,16 @@ func NewAgent(dataDir ...string) (agent *Agent, err error) {
 	if err != nil {
 		slog.Debug("Systemd", "err", err)
 	}
+	if agent.systemdManager != nil {
+		agent.systemInfo.SystemdLogs = agent.systemdManager.logsEnabled
+	}
 
 	agent.smartManager, err = NewSmartManager()
 	if err != nil {
 		slog.Debug("SMART", "err", err)
 	}
+
+	agent.packageUpdates = newPackageUpdatesManager(agent.dataDir)
 
 	// initialize GPU manager
 	agent.gpuManager, err = NewGPUManager()
@@ -219,6 +237,10 @@ func (a *Agent) gatherStats(options common.DataRequestOptions) *system.CombinedD
 		}
 	}
 
+	if a.packageUpdates != nil {
+		data.Info.PackageUpdates = a.packageUpdates.get(time.Now())
+	}
+
 	data.Stats.ExtraFs = make(map[string]*system.FsStats)
 	data.Info.ExtraFsPct = make(map[string]float64)
 	for name, stats := range a.fsStats {
@@ -252,7 +274,11 @@ func (a *Agent) gatherStats(options common.DataRequestOptions) *system.CombinedD
 // Start initializes and starts the agent with optional WebSocket connection
 func (a *Agent) Start(serverOptions ServerOptions) error {
 	a.keys = serverOptions.Keys
-	return a.connectionManager.Start(serverOptions)
+	err := a.connectionManager.Start(serverOptions)
+	if err != nil {
+		a.cleanupSensorShadow()
+	}
+	return err
 }
 
 func (a *Agent) getFingerprint() string {
