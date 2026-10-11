@@ -15,7 +15,7 @@ permissions:
   packages: write
 
 env:
-  OCI_REGISTRY: ghcr.io/henrygd/beszel-charts
+  OCI_REGISTRY: ghcr.io/team-camcore/beszel-charts
 
 jobs:
   changes:
