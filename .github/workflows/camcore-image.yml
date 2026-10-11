@@ -52,7 +52,7 @@ jobs:
         id: metadata
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/camcoreau/beszel
+          images: ghcr.io/team-camcore/beszel
           tags: |
             type=raw,value=latest
             type=sha,prefix=sha-
