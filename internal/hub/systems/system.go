@@ -381,6 +381,7 @@ func createSystemDetailsRecord(app core.App, data *system.Details, systemId stri
 		"kernel":   data.Kernel,
 		"cores":    data.Cores,
 		"threads":  data.Threads,
+		"sockets":  data.Sockets,
 		"cpu":      data.CpuModel,
 		"os":       data.Os,
 		"os_name":  data.OsName,
@@ -618,8 +619,13 @@ func createContainerRecords(app core.App, data []*container.Stats, systemId stri
 
 // getRecord retrieves the system record from the database.
 // If the record is not found, it removes the system from the manager.
+// Other errors, like a query timing out while the hub is stalled, leave the
+// system in place so the updater retries on the next tick (issue #2544).
 func (sys *System) getRecord(app core.App) (*core.Record, error) {
 	record, err := app.FindRecordById("systems", sys.Id)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 	if err != nil || record == nil {
 		_ = sys.manager.RemoveSystem(sys.Id)
 		if err == nil {
@@ -1104,6 +1110,17 @@ func migrateDeprecatedFields(cd *system.CombinedData, createDetails bool) {
 		cd.Stats.DiskIO[0] = uint64(cd.Stats.DiskReadPs * 1024 * 1024)
 		cd.Stats.DiskIO[1] = uint64(cd.Stats.DiskWritePs * 1024 * 1024)
 		cd.Stats.DiskReadPs, cd.Stats.DiskWritePs = 0, 0
+	}
+	// migration added 0.21.1
+	for _, fs := range cd.Stats.ExtraFs {
+		if fs == nil {
+			continue
+		}
+		if fs.DiskReadBytes == 0 && fs.DiskWriteBytes == 0 {
+			fs.DiskReadBytes = uint64(fs.DiskReadPs * 1024 * 1024)
+			fs.DiskWriteBytes = uint64(fs.DiskWritePs * 1024 * 1024)
+		}
+		fs.DiskReadPs, fs.DiskWritePs = 0, 0
 	}
 	// migration added 0.19.0 - Move deprecated Info fields to Details struct
 	if cd.Details == nil && cd.Info.Hostname != "" {
