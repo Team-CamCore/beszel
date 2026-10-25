@@ -15,7 +15,7 @@ jobs:
     name: Lock Inactive Issues
     runs-on: ubuntu-24.04
     steps:
-      - uses: klaasnicolaas/action-inactivity-lock@v2.0.1
+      - uses: klaasnicolaas/action-inactivity-lock@0ee41c932b9b4e52b8333c6ede0c69403681ebe2 # v2.0.1
         id: lock
         with:
           days-inactive-issues: 14
@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Close Stale Issues
-        uses: actions/stale@v11
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
