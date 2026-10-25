@@ -4,10 +4,17 @@ on:
   push:
     branches:
       - main
+    # Everything the hub binary is built from: the root package, internal/**
+    # (including the embedded site) and the module files. agent/ and
+    # supplemental/ are not part of the hub image.
     paths:
-      - "internal/site/**"
-      - "internal/dockerfile_hub"
+      - "*.go"
+      - "go.mod"
+      - "go.sum"
+      - "internal/**"
       - ".github/workflows/camcore-image.yml"
+      - "!**/*_test.go"
+      - "!internal/dockerfile_agent*"
   workflow_dispatch:
 
 permissions:
